@@ -975,10 +975,17 @@ async function savePicks() {
   btn.disabled=true; btn.textContent='Saving...';
   try {
     const hintVal = document.getElementById('login-hint') ? document.getElementById('login-hint').value.trim() : '';
+    const pickCount = Object.keys(myPicks).length;
+    if (pickCount === 0) {
+      toast('No picks to save yet — make your selections first!');
+      btn.disabled=false; btn.textContent='Save my picks';
+      return;
+    }
     const savePayload = {name:currentUser.name,pin:currentUser.pin,picks:myPicks,updated_at:new Date().toISOString()};
     if (hintVal) savePayload.hint = hintVal;
-    await sb.upsert('participants', savePayload);
-    toast('Picks saved!');
+    const result = await sb.upsert('participants', savePayload);
+    console.log('Save result:', result, 'picks saved:', pickCount);
+    toast('Picks saved! (' + pickCount + ' picks)');
     btn.textContent='&#10003; Saved';
     setTimeout(()=>{btn.disabled=false;btn.textContent='Save my picks';},2000);
   } catch(e) { toast('Save failed — check connection.'); btn.disabled=false; btn.textContent='Save my picks'; console.error(e); }

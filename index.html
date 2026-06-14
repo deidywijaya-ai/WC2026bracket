@@ -545,17 +545,7 @@ async function handleLogin() {
         toast('Incorrect password. Try the Forgot password link below.');
         return;
       }
-      const savedPicks = rows[0].picks || {};
-      // Validate picks against current teams — wipe if teams have changed
-      const allCurrentTeams = TEAMS_R32.flat();
-      const r32Picks = Object.entries(savedPicks).filter(([k]) => k.startsWith('r0_'));
-      const picksAreValid = r32Picks.length === 0 || r32Picks.every(([,v]) => allCurrentTeams.includes(v));
-      myPicks = picksAreValid ? savedPicks : {};
-      if (!picksAreValid) {
-        toast('Teams have been updated — please redo your bracket picks.');
-        // Save cleared picks back to Supabase
-        await sb.upsert('participants', { name, pin: pwd, picks: {}, updated_at: new Date().toISOString() });
-      }
+      myPicks = rows[0].picks || {};
       document.getElementById('hint-field').style.display = 'none';
       document.getElementById('login-subtext').textContent = 'Returning? Use the same name + password to update your picks.';
     } else {
@@ -573,7 +563,12 @@ async function handleLogin() {
       }
       if (!hint) { toast('Please enter a password hint.'); return; }
       myPicks = {};
-      await sb.upsert('participants', { name, pin: pwd, hint, picks: {}, updated_at: new Date().toISOString() });
+      // Register new player with POST
+      await fetch(SUPABASE_URL + '/rest/v1/participants', {
+        method: 'POST',
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ name, pin: pwd, hint, picks: {}, updated_at: new Date().toISOString() })
+      });
     }
     currentUser = { name, pin: pwd };
     await loadTeams();
@@ -978,17 +973,25 @@ async function savePicks() {
   const btn=document.getElementById('save-btn');
   btn.disabled=true; btn.textContent='Saving...';
   try {
-    const hintVal = document.getElementById('login-hint') ? document.getElementById('login-hint').value.trim() : '';
     const pickCount = Object.keys(myPicks).length;
     if (pickCount === 0) {
       toast('No picks to save yet — make your selections first!');
       btn.disabled=false; btn.textContent='Save my picks';
       return;
     }
-    const savePayload = {name:currentUser.name,pin:currentUser.pin,picks:myPicks,updated_at:new Date().toISOString()};
-    if (hintVal) savePayload.hint = hintVal;
-    const result = await sb.upsert('participants', savePayload);
-    console.log('Save result:', result, 'picks saved:', pickCount);
+    // Use PATCH to update existing participant record
+    const url = SUPABASE_URL + '/rest/v1/participants?name=eq.' + encodeURIComponent(currentUser.name);
+    const r = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify({ picks: myPicks, updated_at: new Date().toISOString() })
+    });
+    if (!r.ok) throw new Error('Save failed: ' + await r.text());
     toast('Picks saved! (' + pickCount + ' picks)');
     btn.textContent='&#10003; Saved';
     setTimeout(()=>{btn.disabled=false;btn.textContent='Save my picks';},2000);
@@ -1396,11 +1399,11 @@ async function saveTeams() {
     setTimeout(() => badge.style.display = 'none', 3000);
     // Also clear all participant picks since team names changed
     try {
-      await sb.upsert('participants', []);
-      const allPlayers = await sb.get('/rest/v1/participants?select=name');
-      for (const p of allPlayers) {
-        await sb.upsert('participants', { name: p.name, picks: {}, updated_at: new Date().toISOString() });
-      }
+      await fetch(SUPABASE_URL + '/rest/v1/participants?id=gte.0', {
+        method: 'PATCH',
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ picks: {}, updated_at: new Date().toISOString() })
+      });
     } catch(e) { console.error('Could not clear player picks:', e); }
     toast('Teams saved! All player picks cleared — players must redo their brackets.');
   } catch(e) { toast('Save failed.'); console.error(e); }

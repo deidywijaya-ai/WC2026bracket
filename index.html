@@ -353,10 +353,15 @@ body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--
     <div id="team-editor" style="display:none;margin-top:1rem">
       <div style="font-size:12px;color:var(--ink-light);margin-bottom:10px">Enter exactly 16 matches. Each row = one R32 match. Order must follow the official bracket draw.</div>
       <div id="team-editor-grid" style="display:grid;grid-template-columns:1fr 20px 1fr;gap:6px;align-items:center"></div>
-      <div style="margin-top:12px;display:flex;gap:8px">
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="saveTeams()">Save teams</button>
+        <button class="btn btn-outline btn-sm" onclick="previewTeams()">&#128065; Preview bracket</button>
         <button class="btn btn-outline btn-sm" onclick="toggleTeamEditor()">Cancel</button>
         <button class="btn btn-warn btn-sm" onclick="resetTeams()">Reset to defaults</button>
+      </div>
+      <div id="team-preview" style="display:none;margin-top:1.5rem">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--ink-mid)">&#128065; Bracket preview — verify this looks correct before saving</div>
+        <div id="team-preview-body" class="bracket-wrap"></div>
       </div>
     </div>
   </div>
@@ -1336,6 +1341,105 @@ async function loadTeams() {
       }
     }
   } catch(e) { console.error('loadTeams', e); }
+}
+
+function previewTeams() {
+  // Read current values from the input fields
+  const previewTeams = [];
+  for (let i = 0; i < 16; i++) {
+    const aEl = document.getElementById('team_' + i + '_a');
+    const bEl = document.getElementById('team_' + i + '_b');
+    if (!aEl || !bEl) continue;
+    const a = aEl.value.trim() || 'Team A';
+    const b = bEl.value.trim() || 'Team B';
+    previewTeams.push([a, b]);
+  }
+
+  const previewDiv = document.getElementById('team-preview');
+  const previewBody = document.getElementById('team-preview-body');
+  previewDiv.style.display = '';
+
+  // Render using same layout as renderBracket but R32 only, read-only
+  const SLOT_H = 30;
+  const SLOT_GAP = 4;
+  const MATCH_H = SLOT_H * 2 + SLOT_GAP;
+  const COL_W = 148;
+  const CONN_W = 32;
+  const TOP_OFF = 36;
+  const BASE_GAP = 12;
+  const R32_COUNT = 16;
+
+  // Compute centres for R32 and R16 (so we can show connector lines)
+  const centres = [];
+  const r0 = [];
+  for (let i = 0; i < R32_COUNT; i++) {
+    r0.push(TOP_OFF + i * (MATCH_H + BASE_GAP) + MATCH_H / 2);
+  }
+  centres.push(r0);
+  // R16 centres
+  const r1 = [];
+  for (let i = 0; i < r0.length; i += 2) r1.push((r0[i] + r0[i+1]) / 2);
+  centres.push(r1);
+
+  const totalH = TOP_OFF + R32_COUNT * (MATCH_H + BASE_GAP);
+  const r16X = COL_W + CONN_W;
+
+  let html = `<div style="position:relative;min-width:${r16X + COL_W + 20}px;height:${totalH + 20}px">`;
+
+  // Headers
+  html += `<div style="position:absolute;left:0;top:0;width:${COL_W}px;text-align:center;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-light);padding:3px 0;border-bottom:1px solid var(--border)">Round of 32</div>`;
+  html += `<div style="position:absolute;left:${r16X}px;top:0;width:${COL_W}px;text-align:center;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-light);padding:3px 0;border-bottom:1px solid var(--border)">Round of 16 →</div>`;
+
+  // Match number labels + team buttons
+  for (let i = 0; i < previewTeams.length; i++) {
+    const [a, b] = previewTeams[i];
+    const cy = centres[0][i];
+    const matchTop = cy - MATCH_H / 2;
+
+    html += `<div style="position:absolute;left:0;top:${matchTop}px;width:${COL_W}px">
+      <div style="position:absolute;left:-22px;top:${SLOT_H/2 - 8}px;font-size:10px;color:var(--ink-light);font-weight:600">${i+1}</div>
+      <div style="margin-bottom:${SLOT_GAP}px">
+        <button class="team-btn" disabled style="width:100%;height:${SLOT_H}px">${a}</button>
+      </div>
+      <div>
+        <button class="team-btn" disabled style="width:100%;height:${SLOT_H}px">${b}</button>
+      </div>
+    </div>`;
+
+    // Connector to R16
+    const nextCy = centres[1][Math.floor(i / 2)];
+    const aCy = matchTop + SLOT_H / 2;
+    const bCy = matchTop + SLOT_H + SLOT_GAP + SLOT_H / 2;
+    const midY = (aCy + bCy) / 2;
+    html += `<svg style="position:absolute;left:${COL_W}px;top:0;width:${CONN_W}px;height:${totalH+20}px;pointer-events:none;overflow:visible;z-index:0">
+      <line x1="0" y1="${aCy}" x2="${CONN_W/2}" y2="${aCy}" stroke="var(--border-mid)" stroke-width="1.5"/>
+      <line x1="0" y1="${bCy}" x2="${CONN_W/2}" y2="${bCy}" stroke="var(--border-mid)" stroke-width="1.5"/>
+      <line x1="${CONN_W/2}" y1="${aCy}" x2="${CONN_W/2}" y2="${bCy}" stroke="var(--border-mid)" stroke-width="1.5"/>
+      <line x1="${CONN_W/2}" y1="${midY}" x2="${CONN_W}" y2="${midY}" stroke="var(--border-mid)" stroke-width="1.5"/>
+    </svg>`;
+  }
+
+  // R16 TBD slots to show the bracket structure
+  for (let i = 0; i < 8; i++) {
+    const cy = centres[1][i];
+    const matchTop = cy - MATCH_H / 2;
+    const [aTeam] = previewTeams[i * 2] || ['?'];
+    const [bTeam] = previewTeams[i * 2 + 1] || ['?'];
+    html += `<div style="position:absolute;left:${r16X}px;top:${matchTop}px;width:${COL_W}px">
+      <div style="margin-bottom:${SLOT_GAP}px">
+        <button class="team-btn tbd" disabled style="width:100%;height:${SLOT_H}px;font-size:11px;color:var(--ink-light)">Winner of M${i*2+1}</button>
+      </div>
+      <div>
+        <button class="team-btn tbd" disabled style="width:100%;height:${SLOT_H}px;font-size:11px;color:var(--ink-light)">Winner of M${i*2+2}</button>
+      </div>
+    </div>`;
+  }
+
+  html += '</div>';
+  html += `<p style="font-size:12px;color:var(--ink-light);margin-top:10px">Match numbers 1–16 are shown on the left. Verify the order matches the official FIFA bracket draw, then click <strong>Save teams</strong>.</p>`;
+
+  previewBody.innerHTML = html;
+  previewBody.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function toggleTeamEditor() {

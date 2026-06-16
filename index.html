@@ -351,7 +351,7 @@ body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--
     </div>
     <p style="font-size:13px;color:var(--ink-light);margin-bottom:0" id="teams-hint">Update these once the group stage is complete and the R32 draw is confirmed. Changes affect all players immediately.</p>
     <div id="team-editor" style="display:none;margin-top:1rem">
-      <div style="font-size:12px;color:var(--ink-light);margin-bottom:10px">Enter exactly 16 matches. Each row = one R32 match. Order must follow the official bracket draw.</div>
+      <div style="font-size:12px;color:var(--ink-light);margin-bottom:10px">Enter confirmed matches. Leave blank for unconfirmed matches — they show as TBD for players and can be updated anytime before entries are locked.</div>
       <div id="team-editor-grid" style="display:grid;grid-template-columns:1fr 20px 1fr;gap:6px;align-items:center"></div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="saveTeams()">Save teams</button>
@@ -668,14 +668,24 @@ function renderBracket() {
   const savedScrollTop = window.scrollY;
 
   // Progress
-  const totalPicks = 32; // R32+R16+QF+SF+Final = 31
+  // Count how many picks are actually available (non-TBD R32 matches)
+  const confirmedR32 = TEAMS_R32.filter(([a,b]) => a !== 'TBD' && b !== 'TBD').length;
+  // Total available picks scales with confirmed matches
+  // R32 confirmed + downstream rounds (simplified: just track what's makeable)
+  const totalPicks = 32; // max when all confirmed
   const made = Object.keys(myPicks).length;
-  const pct = Math.round(made / totalPicks * 100);
-  document.getElementById('picks-label').textContent = `${made}/${totalPicks} picks`;
-  document.getElementById('progress-bar').style.width = pct + '%';
-  const complete = made >= totalPicks;
-  document.getElementById('completion-badge').innerHTML = complete
+  const pct = Math.round(made / Math.max(totalPicks, 1) * 100);
+  document.getElementById('picks-label').textContent = `${made} picks made`;
+  document.getElementById('progress-bar').style.width = Math.min(pct, 100) + '%';
+  // Show complete only when all confirmed matches are picked
+  const allConfirmedPicked = TEAMS_R32.every(([a,b], i) => {
+    if (a === 'TBD' || b === 'TBD') return true; // skip TBD matches
+    return !!myPicks[mk(0, i)];
+  });
+  document.getElementById('completion-badge').innerHTML = confirmedR32 === 16 && made >= totalPicks
     ? '<span class="badge badge-open">&#10003; Bracket complete</span>'
+    : confirmedR32 < 16
+    ? `<span class="badge badge-warn">&#9888; ${confirmedR32}/16 matches confirmed — pick what you can</span>`
     : `<span class="badge badge-warn">&#9888; ${totalPicks - made} picks remaining</span>`;
 
   // ── Layout constants ──────────────────────────────────────────
@@ -1151,6 +1161,8 @@ async function loadAdminEntries() {
     rows.forEach((r, idx) => {
       const pc = Object.keys(r.picks || {}).length;
       const upd = r.updated_at ? new Date(r.updated_at).toLocaleDateString() : '—';
+      const confirmedMatches = (window._currentTeams || TEAMS_R32).filter(([a,b]) => a !== 'TBD' && b !== 'TBD').length;
+      const expectedPicks = confirmedMatches > 0 ? Math.min(totalPicks, confirmedMatches * 2) : totalPicks;
       const complete = pc >= totalPicks;
       const { total } = computeScore(r.picks || {});
       html += `
@@ -1464,29 +1476,29 @@ function renderTeamEditorGrid() {
            <div style="font-size:11px;font-weight:700;color:var(--ink-light);text-transform:uppercase;letter-spacing:.06em">Team B</div>`;
   for (let i = 0; i < 16; i++) {
     const [a, b] = TEAMS_R32[i] || ['', ''];
+    const aVal = a === 'TBD' ? '' : a;
+    const bVal = b === 'TBD' ? '' : b;
     html += `
-      <input type="text" id="team_${i}_a" value="${a}" maxlength="30"
+      <input type="text" id="team_${i}_a" value="${aVal}" maxlength="30"
         style="padding:6px 10px;font-size:13px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);outline:none;width:100%"
-        placeholder="Team A"/>
+        placeholder="TBD (leave blank if unknown)"/>
       <div style="text-align:center;font-size:11px;font-weight:700;color:var(--ink-light)">vs</div>
-      <input type="text" id="team_${i}_b" value="${b}" maxlength="30"
+      <input type="text" id="team_${i}_b" value="${bVal}" maxlength="30"
         style="padding:6px 10px;font-size:13px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);outline:none;width:100%"
-        placeholder="Team B"/>`;
+        placeholder="TBD (leave blank if unknown)"/>`;
   }
   grid.innerHTML = html;
 }
 
 async function saveTeams() {
   const newTeams = [];
-  let valid = true;
   for (let i = 0; i < 16; i++) {
     const a = document.getElementById(`team_${i}_a`).value.trim();
     const b = document.getElementById(`team_${i}_b`).value.trim();
-    if (!a || !b) { toast(`Match ${i+1}: both team names required.`); valid = false; break; }
-    if (a === b)  { toast(`Match ${i+1}: teams must be different.`); valid = false; break; }
-    newTeams.push([a, b]);
+    // Allow empty/TBD matches — they show as TBD vs TBD for players
+    if (a && b && a === b) { toast(`Match ${i+1}: teams must be different.`); return; }
+    newTeams.push([a || 'TBD', b || 'TBD']);
   }
-  if (!valid) return;
 
   try {
     await sb.upsert('settings', { key: 'teams_r32', value: JSON.stringify(newTeams) });

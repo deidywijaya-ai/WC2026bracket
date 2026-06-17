@@ -1495,33 +1495,83 @@ async function saveTeams() {
   for (let i = 0; i < 16; i++) {
     const a = document.getElementById(`team_${i}_a`).value.trim();
     const b = document.getElementById(`team_${i}_b`).value.trim();
-    // Allow empty/TBD matches — they show as TBD vs TBD for players
     if (a && b && a === b) { toast(`Match ${i+1}: teams must be different.`); return; }
     newTeams.push([a || 'TBD', b || 'TBD']);
   }
 
   try {
+    // Find which match indices have CHANGED (team names are different from before)
+    const changedMatches = [];
+    for (let i = 0; i < 16; i++) {
+      const oldA = TEAMS_R32[i] ? TEAMS_R32[i][0] : 'TBD';
+      const oldB = TEAMS_R32[i] ? TEAMS_R32[i][1] : 'TBD';
+      if (newTeams[i][0] !== oldA || newTeams[i][1] !== oldB) {
+        changedMatches.push(i);
+      }
+    }
+
     await sb.upsert('settings', { key: 'teams_r32', value: JSON.stringify(newTeams) });
+
     // Update live TEAMS_R32
     TEAMS_R32.length = 0;
     newTeams.forEach(pair => TEAMS_R32.push(pair));
-    // Clear all results and picks since teams changed
-    results = {};
+
+    // Only clear results for changed matches
+    changedMatches.forEach(i => {
+      delete results[mk(0, i)];
+    });
     await saveSettings();
+
+    // For each player, only clear picks that reference teams in changed matches
+    if (changedMatches.length > 0) {
+      try {
+        const rows = await sb.get('/rest/v1/participants?select=name,picks');
+        for (const row of rows) {
+          const picks = row.picks || {};
+          let modified = false;
+          // Clear R32 picks for changed matches
+          changedMatches.forEach(i => {
+            const key = mk(0, i);
+            if (picks[key]) { delete picks[key]; modified = true; }
+          });
+          // If any R32 pick was cleared, also cascade-clear downstream picks
+          // by rebuilding rounds and removing any picks that are no longer valid
+          if (modified) {
+            // Clear all picks beyond R32 for safety — they depend on R32
+            // Only clear if their feeder R32 match changed
+            changedMatches.forEach(i => {
+              // Clear R16 pick that depends on this R32 match
+              const r16idx = Math.floor(i / 2);
+              delete picks[mk(1, r16idx)];
+              // Clear QF
+              delete picks[mk(2, Math.floor(r16idx / 2))];
+              // Clear SF
+              delete picks[mk(3, Math.floor(Math.floor(r16idx / 2) / 2))];
+              // Clear Final
+              delete picks[mk(4, 0)];
+              // Clear 3rd place
+              delete picks['third_place'];
+            });
+            await fetch(SUPABASE_URL + '/rest/v1/participants?name=eq.' + encodeURIComponent(row.name), {
+              method: 'PATCH',
+              headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+              body: JSON.stringify({ picks, updated_at: new Date().toISOString() })
+            });
+          }
+        }
+      } catch(e) { console.error('Could not update player picks:', e); }
+    }
+
     toggleTeamEditor();
     renderAdminBracket();
     const badge = document.getElementById('teams-saved-badge');
     badge.style.display = '';
     setTimeout(() => badge.style.display = 'none', 3000);
-    // Also clear all participant picks since team names changed
-    try {
-      await fetch(SUPABASE_URL + '/rest/v1/participants?id=gte.0', {
-        method: 'PATCH',
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ picks: {}, updated_at: new Date().toISOString() })
-      });
-    } catch(e) { console.error('Could not clear player picks:', e); }
-    toast('Teams saved! All player picks cleared — players must redo their brackets.');
+
+    const msg = changedMatches.length === 0
+      ? 'Teams saved — no changes detected.'
+      : `Teams saved! ${changedMatches.length} match(es) updated. Affected player picks cleared.`;
+    toast(msg);
   } catch(e) { toast('Save failed.'); console.error(e); }
 }
 

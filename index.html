@@ -320,6 +320,14 @@ body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--
   </div>
   <div class="card"><div id="lb-body"><div class="empty">Loading...</div></div></div>
   <p style="font-size:12px;color:var(--ink-light);margin-top:4px">Max: 100pts &nbsp;|&nbsp; Tiebreaker: correct 3rd place pick &#129353;</p>
+  <div class="card" id="picks-breakdown-card">
+    <div class="section-row" style="margin-bottom:.75rem">
+      <div class="card-title" style="margin-bottom:0">Picks breakdown</div>
+      <button class="btn btn-outline btn-sm" onclick="loadPicksBreakdown()">&#8635; Refresh</button>
+    </div>
+    <p style="font-size:13px;color:var(--ink-light);margin-bottom:1rem">Summary of participants' picks for the top 3 finishers.</p>
+    <div id="picks-breakdown-body"><div class="empty">Click Refresh to load.</div></div>
+  </div>
 </div>
 
 <!-- RESULTS TAB -->
@@ -626,7 +634,7 @@ function showTab(tab,btn) {
   if (tab==='bracket') renderBracket();
   if (tab==='leaderboard') loadLeaderboard();
   if (tab==='results') loadResults();
-  if (tab==='admin') { renderAdminBracket(); loadAdminEntries(); updateAdminStatus(); }
+  if (tab==='admin') { renderAdminBracket(); loadAdminEntries(); updateAdminStatus(); loadPicksBreakdown(); }
 }
 
 /* ══════════════════════════════════════════
@@ -1537,21 +1545,49 @@ async function saveTeams() {
           // If any R32 pick was cleared, also cascade-clear downstream picks
           // by rebuilding rounds and removing any picks that are no longer valid
           if (modified) {
-            // Clear all picks beyond R32 for safety — they depend on R32
-            // Only clear if their feeder R32 match changed
+            // Cascade-clear only the downstream picks that depend on changed R32 matches
+            // Track which rounds are affected to avoid over-clearing
+            const affectedR16 = new Set();
+            const affectedQF  = new Set();
+            const affectedSF  = new Set();
+            let   affectedF   = false;
+
             changedMatches.forEach(i => {
-              // Clear R16 pick that depends on this R32 match
               const r16idx = Math.floor(i / 2);
-              delete picks[mk(1, r16idx)];
-              // Clear QF
-              delete picks[mk(2, Math.floor(r16idx / 2))];
-              // Clear SF
-              delete picks[mk(3, Math.floor(Math.floor(r16idx / 2) / 2))];
-              // Clear Final
-              delete picks[mk(4, 0)];
-              // Clear 3rd place
-              delete picks['third_place'];
+              const qfIdx  = Math.floor(r16idx / 2);
+              const sfIdx  = Math.floor(qfIdx / 2);
+              affectedR16.add(r16idx);
+              affectedQF.add(qfIdx);
+              affectedSF.add(sfIdx);
+              affectedF = true;
             });
+
+            // Only clear a pick if the match it came from is affected
+            affectedR16.forEach(idx => {
+              if (picks[mk(1, idx)]) { delete picks[mk(1, idx)]; }
+            });
+            affectedQF.forEach(idx => {
+              if (picks[mk(2, idx)]) { delete picks[mk(2, idx)]; }
+            });
+            affectedSF.forEach(idx => {
+              if (picks[mk(3, idx)]) { delete picks[mk(3, idx)]; }
+            });
+            // Only clear Final/3rd if both SF matches are affected
+            if (affectedSF.has(0) && affectedSF.has(1)) {
+              delete picks[mk(4, 0)];
+              delete picks['third_place'];
+            } else if (affectedF) {
+              // One SF affected — Final pick might still be valid
+              // Check if the Final pick is still a valid SF winner
+              const src = Object.assign({}, picks);
+              const rounds = buildRounds(src);
+              const finalPair = rounds[4] ? rounds[4][0] : ['TBD','TBD'];
+              const finalPick = picks[mk(4, 0)];
+              if (finalPick && finalPair[0] !== finalPick && finalPair[1] !== finalPick) {
+                delete picks[mk(4, 0)];
+                delete picks['third_place'];
+              }
+            }
             await fetch(SUPABASE_URL + '/rest/v1/participants?name=eq.' + encodeURIComponent(row.name), {
               method: 'PATCH',
               headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
@@ -1745,6 +1781,90 @@ document.addEventListener('click', function(e) {
   const team = btn.getAttribute('data-pick-team');
   if (key && team) setPick(key, team);
 });
+
+async function loadPicksBreakdown() {
+  const container = document.getElementById('picks-breakdown-body');
+  if (!container) return;
+  container.innerHTML = '<div class="empty">Loading...</div>';
+
+  try {
+    const rows = await sb.get('/rest/v1/participants?select=name,picks&order=name');
+    if (!rows.length) {
+      container.innerHTML = '<div class="empty">No entries yet.</div>';
+      return;
+    }
+
+    // Tally picks for Champion (r4_m0), Runner-up (the other finalist), 3rd place
+    const championTally  = {};
+    const runnerUpTally  = {};
+    const thirdTally     = {};
+    const total = rows.length;
+
+    rows.forEach(r => {
+      const picks = r.picks || {};
+      // Champion = whoever they picked to win the Final
+      const champ = picks[mk(4, 0)];
+      if (champ) championTally[champ] = (championTally[champ] || 0) + 1;
+
+      // Runner-up = the other finalist (whoever was in the Final but not picked as champion)
+      // We need to figure out who the two finalists are from this player's picks
+      const finalRounds = buildRounds(picks);
+      const finalists = finalRounds[4] ? finalRounds[4][0] : ['TBD','TBD'];
+      const [fA, fB] = finalists;
+      if (champ && fA !== 'TBD' && fB !== 'TBD') {
+        const runnerUp = champ === fA ? fB : fA;
+        if (runnerUp && runnerUp !== 'TBD') {
+          runnerUpTally[runnerUp] = (runnerUpTally[runnerUp] || 0) + 1;
+        }
+      }
+
+      // 3rd place
+      const third = picks['third_place'];
+      if (third) thirdTally[third] = (thirdTally[third] || 0) + 1;
+    });
+
+    function renderTally(tally, label, emoji) {
+      const sorted = Object.entries(tally).sort((a,b) => b[1]-a[1]);
+      if (!sorted.length) return `<div style="color:var(--ink-light);font-size:13px;padding:8px 0">No picks yet</div>`;
+
+      let html = '';
+      sorted.forEach(([team, count], i) => {
+        const pct = Math.round(count / total * 100);
+        const isTop = i === 0;
+        html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <div style="width:20px;font-size:12px;font-weight:700;color:var(--ink-light);text-align:center">${i+1}</div>
+          <div style="flex:1;font-size:13px;font-weight:${isTop?'600':'400'}">${team}</div>
+          <div style="width:120px;height:8px;background:var(--border);border-radius:4px;overflow:hidden">
+            <div style="height:8px;width:${pct}%;background:${isTop?'var(--green)':'var(--border-mid)'};border-radius:4px"></div>
+          </div>
+          <div style="font-size:13px;font-weight:500;min-width:60px;text-align:right">${count}/${total} <span style="color:var(--ink-light);font-weight:400">(${pct}%)</span></div>
+        </div>`;
+      });
+      return html;
+    }
+
+    container.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1.25rem">
+        <div>
+          <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--gold);margin-bottom:8px">&#127942; Champion</div>
+          ${renderTally(championTally, 'Champion', '🏆')}
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-light);margin-bottom:8px">&#129352; Runner-up</div>
+          ${renderTally(runnerUpTally, 'Runner-up', '🥈')}
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--bronze);margin-bottom:8px">&#129353; 3rd place</div>
+          ${renderTally(thirdTally, '3rd place', '🥉')}
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--ink-light);margin-top:12px">Based on ${total} entr${total===1?'y':'ies'}. Percentages may not sum to 100% as not all players have completed their brackets.</p>`;
+
+  } catch(e) {
+    container.innerHTML = '<div class="empty">Failed to load.</div>';
+    console.error(e);
+  }
+}
 
 function initials(name){return name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);}
 let toastTimer;

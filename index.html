@@ -1141,7 +1141,35 @@ function renderAdminBracket() {
 
 
 async function adminSetResult(key,team) {
-  if(results[key]===team) delete results[key]; else results[key]=team;
+  if (results[key] === team) {
+    delete results[key];
+  } else {
+    results[key] = team;
+  }
+  // Cascade-clear downstream results that are no longer valid
+  const m = key.match(/r(\d+)_m(\d+)/);
+  if (m) {
+    const changedRound = parseInt(m[1]);
+    let matchIdx = parseInt(m[2]);
+    for (let r = changedRound + 1; r <= 4; r++) {
+      matchIdx = Math.floor(matchIdx / 2);
+      const dKey = r === 4 ? mk(4, 0) : mk(r, matchIdx);
+      const rounds = buildRounds(results);
+      const pair = rounds[r] ? (rounds[r][r===4?0:matchIdx] || ['TBD','TBD']) : ['TBD','TBD'];
+      const setResult = results[dKey];
+      if (setResult && setResult !== pair[0] && setResult !== pair[1]) {
+        delete results[dKey];
+      }
+    }
+    // Also clear 3rd place if SF results changed
+    if (changedRound >= 2) {
+      const [l1, l2] = getSFLosers(results);
+      const tp = results['third_place'];
+      if (tp && tp !== l1 && tp !== l2) {
+        delete results['third_place'];
+      }
+    }
+  }
   await saveSettings(); renderAdminBracket(); toast('Result saved.');
 }
 

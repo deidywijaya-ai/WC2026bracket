@@ -339,7 +339,7 @@ body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--
     <div class="row">
       <span id="admin-status-badge"></span>
       <button class="btn btn-outline btn-sm" id="lock-btn" onclick="toggleLock()"></button>
-      <button class="btn btn-danger btn-sm" onclick="confirmClearAll()">Clear all entries</button>
+      <button class="btn btn-outline btn-sm" onclick="exportAllEntries()">&#128190; Export backup</button>
     </div>
   </div>
   <div class="card">
@@ -1361,11 +1361,7 @@ async function deleteEntry(name) {
   catch(e){toast('Failed to remove.');}
 }
 
-async function confirmClearAll() {
-  if(!confirm('Delete ALL participant entries? This cannot be undone.')) return;
-  try { await sb.delete('/rest/v1/participants?id=gte.0'); toast('All entries cleared.'); loadAdminEntries(); }
-  catch(e){toast('Failed to clear.');}
-}
+async 
 
 /* ── TEAM EDITOR ── */
 const DEFAULT_TEAMS_R32 = [
@@ -1903,6 +1899,49 @@ async function loadPicksBreakdown() {
 
   } catch(e) {
     container.innerHTML = '<div class="empty">Failed to load.</div>';
+    console.error(e);
+  }
+}
+
+async function exportAllEntries() {
+  try {
+    toast('Preparing backup...');
+    const [participants, settingsRows] = await Promise.all([
+      sb.get('/rest/v1/participants?select=*&order=name'),
+      sb.get('/rest/v1/settings?select=*')
+    ]);
+    const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
+
+    const backup = {
+      exported_at: new Date().toISOString(),
+      tournament: 'World Cup 2026 Bracket Challenge',
+      teams_r32: TEAMS_R32,
+      results: results,
+      locked: appLocked,
+      participant_count: participants.length,
+      participants: participants.map(p => ({
+        name: p.name,
+        hint: p.hint || null,
+        picks: p.picks || {},
+        updated_at: p.updated_at
+      }))
+    };
+
+    const json = JSON.stringify(backup, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const dateStr = new Date().toISOString().slice(0,10);
+    a.href = url;
+    a.download = `wc2026-bracket-backup-${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    toast(`Backup downloaded — ${participants.length} entries saved.`);
+  } catch(e) {
+    toast('Backup failed. Check connection.');
     console.error(e);
   }
 }

@@ -260,6 +260,7 @@ body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--
         <input type="text" id="login-hint" placeholder="e.g. my dog's name + birth year" maxlength="80"/>
       </div>
       <p class="hint" style="margin-bottom:10px" id="login-subtext">New? You'll also set a hint to help you remember your password.</p>
+      <div id="registration-closed-banner" style="display:none;background:var(--bronze-light);border:1px solid var(--bronze);border-radius:var(--radius-md);padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--bronze)">&#128683; New registrations are closed. If you already have an account, log in above.</div>
       <button class="btn btn-primary" onclick="handleLogin()" style="width:100%">Enter the challenge &#8594;</button>
       <div style="margin-top:10px;text-align:center">
         <button onclick="showForgotPassword()" style="background:none;border:none;color:var(--ink-light);font-size:13px;cursor:pointer;text-decoration:underline">Forgot password?</button>
@@ -338,7 +339,9 @@ body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--
     <span style="font-size:17px;font-weight:600">Admin panel</span>
     <div class="row">
       <span id="admin-status-badge"></span>
+      <span id="registration-status-badge"></span>
       <button class="btn btn-outline btn-sm" id="lock-btn" onclick="toggleLock()"></button>
+      <button class="btn btn-outline btn-sm" id="reg-toggle-btn" onclick="toggleRegistration()"></button>
       <button class="btn btn-outline btn-sm" onclick="exportAllEntries()">&#128190; Export backup</button>
     </div>
   </div>
@@ -433,7 +436,7 @@ let TEAMS_R32 = [
 ];
 
 /* ── STATE ── */
-let currentUser=null, appLocked=false, myPicks={}, results={};
+let currentUser=null, appLocked=false, registrationClosed=false, myPicks={}, results={};
 
 /* ── BRACKET LOGIC ── */
 function mk(r,i){ return `r${r}_m${i}`; }
@@ -553,6 +556,8 @@ async function handleLogin() {
   if (!name) { toast('Please enter your name.'); return; }
   if (!pwd)  { toast('Please enter your password.'); return; }
   try {
+    // Check registration status BEFORE deciding new vs returning player
+    await loadGlobalState();
     const rows = await sb.get(`/rest/v1/participants?name=eq.${encodeURIComponent(name)}&select=*`);
     if (rows.length > 0) {
       // Returning player — just check password matches, no format re-validation
@@ -564,6 +569,11 @@ async function handleLogin() {
       document.getElementById('hint-field').style.display = 'none';
       document.getElementById('login-subtext').textContent = 'Returning? Use the same name + password to update your picks.';
     } else {
+      // New player trying to register
+      if (registrationClosed) {
+        toast('Registration is closed. Only returning players can log in.');
+        return;
+      }
       // New player — enforce strong password
       if (pwd.length < 6) { toast('Password must be at least 6 characters.'); return; }
       if (!/[a-zA-Z]/.test(pwd)) { toast('Password must include at least one letter.'); return; }
@@ -587,7 +597,6 @@ async function handleLogin() {
     }
     currentUser = { name, pin: pwd };
     await loadTeams();
-    await loadGlobalState();
     enterApp();
   } catch(e) { toast('Connection error — check Supabase config.'); console.error(e); }
 }
@@ -624,6 +633,7 @@ async function loadGlobalState() {
     const rows=await sb.get('/rest/v1/settings?select=*');
     const s=Object.fromEntries(rows.map(r=>[r.key,r.value]));
     appLocked=s['locked']==='true';
+    registrationClosed=s['registration_closed']==='true';
     results=s['results']?JSON.parse(s['results']):{};
   } catch(e) { console.error(e); }
 }
@@ -1078,6 +1088,12 @@ function updateAdminStatus() {
     :'<span class="badge badge-open">&#128275; Open</span>';
   const btn=document.getElementById('lock-btn');
   if(btn) btn.textContent=appLocked?'Unlock entries':'Lock entries';
+
+  document.getElementById('registration-status-badge').innerHTML=registrationClosed
+    ?'<span class="badge badge-locked">&#128683; Registration closed</span>'
+    :'<span class="badge badge-open">&#9989; Registration open</span>';
+  const regBtn=document.getElementById('reg-toggle-btn');
+  if(regBtn) regBtn.textContent=registrationClosed?'Reopen registration':'Close registration';
 }
 
 function renderAdminBracket() {
@@ -1178,10 +1194,16 @@ async function toggleLock() {
   toast(appLocked?'Entries locked.':'Entries unlocked.');
 }
 
+async function toggleRegistration() {
+  registrationClosed=!registrationClosed; await saveSettings(); updateAdminStatus();
+  toast(registrationClosed?'New registrations closed. Returning players can still log in.':'Registration reopened.');
+}
+
 async function saveSettings() {
   try {
     await sb.upsert('settings',{key:'locked',value:String(appLocked)});
     await sb.upsert('settings',{key:'results',value:JSON.stringify(results)});
+    await sb.upsert('settings',{key:'registration_closed',value:String(registrationClosed)});
   } catch(e){toast('Save failed.');console.error(e);}
 }
 
@@ -1947,6 +1969,18 @@ async function exportAllEntries() {
 function initials(name){return name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);}
 let toastTimer;
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2500);}
+
+// On page load, check registration status so the login page can show a banner
+(async function initLoginPage() {
+  try {
+    const rows = await sb.get("/rest/v1/settings?key=eq.registration_closed&select=value");
+    if (rows.length && rows[0].value === 'true') {
+      registrationClosed = true;
+      const banner = document.getElementById('registration-closed-banner');
+      if (banner) banner.style.display = '';
+    }
+  } catch(e) { console.error('initLoginPage', e); }
+})();
 </script>
 </body>
 </html>

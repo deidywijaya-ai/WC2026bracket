@@ -385,9 +385,20 @@ body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--
   </div>
 
   <div class="card">
-    <div class="section-row" style="margin-bottom:.75rem">
+    <div class="section-row" style="margin-bottom:.75rem;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin-bottom:0">Participants <span id="participant-count" style="font-weight:400;color:var(--ink-light);font-size:13px"></span></div>
-      <button class="btn btn-outline btn-sm" onclick="loadAdminEntries()">&#8635; Refresh</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="font-size:12px;color:var(--ink-light)">Sort by</label>
+        <select id="admin-sort-select" onchange="setAdminSort(this.value)"
+          style="padding:5px 8px;font-size:13px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);outline:none">
+          <option value="updated_desc">Last updated (newest)</option>
+          <option value="name_asc">Name (A → Z)</option>
+          <option value="name_desc">Name (Z → A)</option>
+          <option value="picks_asc">Picks completed (fewest first)</option>
+          <option value="picks_desc">Picks completed (most first)</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="loadAdminEntries()">&#8635; Refresh</button>
+      </div>
     </div>
     <div id="admin-entries"></div>
   </div>
@@ -1207,71 +1218,110 @@ async function saveSettings() {
   } catch(e){toast('Save failed.');console.error(e);}
 }
 
+let _adminSortMode = 'updated_desc'; // default sort
+
 async function loadAdminEntries() {
   try {
     const rows = await sb.get('/rest/v1/participants?select=name,updated_at,picks&order=updated_at.desc');
     document.getElementById('participant-count').textContent = `(${rows.length})`;
-    if (!rows.length) {
-      document.getElementById('admin-entries').innerHTML = '<div class="empty">No entries yet.</div>';
-      return;
-    }
     window._adminRows = rows;
-    const totalPicks = 32;
-    let html = '';
-    rows.forEach((r, idx) => {
-      const pc = Object.keys(r.picks || {}).length;
-      const upd = r.updated_at ? new Date(r.updated_at).toLocaleDateString() : '—';
-      const confirmedMatches = (window._currentTeams || TEAMS_R32).filter(([a,b]) => a !== 'TBD' && b !== 'TBD').length;
-      const expectedPicks = confirmedMatches > 0 ? Math.min(totalPicks, confirmedMatches * 2) : totalPicks;
-      const complete = pc >= totalPicks;
-      const { total } = computeScore(r.picks || {});
-      html += `
-        <div style="border-bottom:1px solid var(--border)">
-          <div class="admin-entry-row" data-idx="${idx}" style="display:flex;align-items:center;gap:10px;padding:10px 0;cursor:pointer;user-select:none">
-            <div class="avatar" style="width:28px;height:28px;font-size:11px">${initials(r.name)}</div>
-            <span style="flex:1;font-size:14px;font-weight:500">${r.name}</span>
-            <span style="font-size:12px;color:var(--ink-light)">${pc}/32 picks</span>
-            ${complete
-              ? '<span style="font-size:11px;background:var(--green-light);color:var(--green);padding:1px 8px;border-radius:10px;font-weight:600">complete</span>'
-              : '<span style="font-size:11px;background:var(--gold-light);color:var(--gold);padding:1px 8px;border-radius:10px;font-weight:600">incomplete</span>'}
-            <span style="font-size:13px;font-weight:700;color:var(--ink);min-width:44px;text-align:right">${total}pt</span>
-            <span style="font-size:12px;color:var(--ink-light)">${upd}</span>
-            <span class="expand-arrow" style="font-size:11px;color:var(--ink-light);width:12px">&#9660;</span>
-            <button class="btn btn-danger btn-sm admin-delete-btn" data-name="${r.name.replace(/"/g,'&quot;')}">Remove</button>
-          </div>
-          <div class="participant-detail" style="display:none;padding:0 0 16px 38px"></div>
-        </div>`;
-    });
-    const container = document.getElementById('admin-entries');
-    container.innerHTML = html;
-
-    // Attach click handlers via JS (not inline onclick) — reliable for all name chars
-    container.querySelectorAll('.admin-entry-row').forEach(row => {
-      row.addEventListener('click', function(e) {
-        if (e.target.closest('.admin-delete-btn')) return; // ignore delete button clicks
-        const idx = parseInt(this.dataset.idx);
-        const detailEl = this.nextElementSibling;
-        const arrow = this.querySelector('.expand-arrow');
-        if (detailEl.style.display !== 'none') {
-          detailEl.style.display = 'none';
-          arrow.innerHTML = '&#9660;';
-        } else {
-          detailEl.style.display = '';
-          arrow.innerHTML = '&#9650;';
-                // Always re-render so latest results are reflected
-          detailEl.innerHTML = renderParticipantDetail(window._adminRows[idx].picks || {});
-        }
-      });
-    });
-
-    container.querySelectorAll('.admin-delete-btn').forEach(btn => {
-      btn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        deleteEntry(this.dataset.name);
-      });
-    });
-
+    renderAdminEntries();
   } catch(e) { console.error(e); }
+}
+
+function setAdminSort(mode) {
+  _adminSortMode = mode;
+  renderAdminEntries();
+}
+
+function renderAdminEntries() {
+  const rows = window._adminRows || [];
+  const container = document.getElementById('admin-entries');
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty">No entries yet.</div>';
+    return;
+  }
+
+  const totalPicks = 32;
+  // Pre-compute pick count for sorting
+  const withMeta = rows.map(r => ({
+    ...r,
+    _pc: Object.keys(r.picks || {}).length
+  }));
+
+  // Sort according to selected mode
+  switch (_adminSortMode) {
+    case 'name_asc':
+      withMeta.sort((a,b) => a.name.localeCompare(b.name));
+      break;
+    case 'name_desc':
+      withMeta.sort((a,b) => b.name.localeCompare(a.name));
+      break;
+    case 'picks_asc':
+      withMeta.sort((a,b) => a._pc - b._pc || a.name.localeCompare(b.name));
+      break;
+    case 'picks_desc':
+      withMeta.sort((a,b) => b._pc - a._pc || a.name.localeCompare(b.name));
+      break;
+    case 'updated_desc':
+    default:
+      withMeta.sort((a,b) => new Date(b.updated_at||0) - new Date(a.updated_at||0));
+      break;
+  }
+
+  // Keep a lookup from displayed index -> original row (for click-to-expand using picks)
+  window._adminRows = withMeta;
+
+  let html = '';
+  withMeta.forEach((r, idx) => {
+    const pc = r._pc;
+    const upd = r.updated_at ? new Date(r.updated_at).toLocaleDateString() : '—';
+    const complete = pc >= totalPicks;
+    const { total } = computeScore(r.picks || {});
+    html += `
+      <div style="border-bottom:1px solid var(--border)">
+        <div class="admin-entry-row" data-idx="${idx}" style="display:flex;align-items:center;gap:10px;padding:10px 0;cursor:pointer;user-select:none">
+          <div class="avatar" style="width:28px;height:28px;font-size:11px">${initials(r.name)}</div>
+          <span style="flex:1;font-size:14px;font-weight:500">${r.name}</span>
+          <span style="font-size:12px;color:var(--ink-light)">${pc}/32 picks</span>
+          ${complete
+            ? '<span style="font-size:11px;background:var(--green-light);color:var(--green);padding:1px 8px;border-radius:10px;font-weight:600">complete</span>'
+            : '<span style="font-size:11px;background:var(--gold-light);color:var(--gold);padding:1px 8px;border-radius:10px;font-weight:600">incomplete</span>'}
+          <span style="font-size:13px;font-weight:700;color:var(--ink);min-width:44px;text-align:right">${total}pt</span>
+          <span style="font-size:12px;color:var(--ink-light)">${upd}</span>
+          <span class="expand-arrow" style="font-size:11px;color:var(--ink-light);width:12px">&#9660;</span>
+          <button class="btn btn-danger btn-sm admin-delete-btn" data-name="${r.name.replace(/"/g,'&quot;')}">Remove</button>
+        </div>
+        <div class="participant-detail" style="display:none;padding:0 0 16px 38px"></div>
+      </div>`;
+  });
+  container.innerHTML = html;
+
+  // Attach click handlers via JS (not inline onclick) — reliable for all name chars
+  container.querySelectorAll('.admin-entry-row').forEach(row => {
+    row.addEventListener('click', function(e) {
+      if (e.target.closest('.admin-delete-btn')) return; // ignore delete button clicks
+      const idx = parseInt(this.dataset.idx);
+      const detailEl = this.nextElementSibling;
+      const arrow = this.querySelector('.expand-arrow');
+      if (detailEl.style.display !== 'none') {
+        detailEl.style.display = 'none';
+        arrow.innerHTML = '&#9660;';
+      } else {
+        detailEl.style.display = '';
+        arrow.innerHTML = '&#9650;';
+        // Always re-render so latest results are reflected
+        detailEl.innerHTML = renderParticipantDetail(window._adminRows[idx].picks || {});
+      }
+    });
+  });
+
+  container.querySelectorAll('.admin-delete-btn').forEach(btn => {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      deleteEntry(this.dataset.name);
+    });
+  });
 }
 
 

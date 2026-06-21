@@ -385,6 +385,15 @@ body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--
   </div>
 
   <div class="card">
+    <div class="section-row" style="margin-bottom:.75rem">
+      <div class="card-title" style="margin-bottom:0">Bracket pick breakdown</div>
+      <button class="btn btn-outline btn-sm" onclick="loadBracketBreakdown()">&#8635; Refresh</button>
+    </div>
+    <p style="font-size:13px;color:var(--ink-light);margin-bottom:1rem">How participants are split on every match, shown as a count next to each team.</p>
+    <div class="bracket-wrap" id="bracket-breakdown-body"><div class="empty">Loading...</div></div>
+  </div>
+
+  <div class="card">
     <div class="section-row" style="margin-bottom:.75rem;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin-bottom:0">Participants <span id="participant-count" style="font-weight:400;color:var(--ink-light);font-size:13px"></span></div>
       <div style="display:flex;gap:8px;align-items:center">
@@ -657,7 +666,7 @@ function showTab(tab,btn) {
   if (tab==='bracket') renderBracket();
   if (tab==='leaderboard') loadLeaderboard();
   if (tab==='results') loadResults();
-  if (tab==='admin') { renderAdminBracket(); loadAdminEntries(); updateAdminStatus(); loadPicksBreakdown(); }
+  if (tab==='admin') { renderAdminBracket(); loadAdminEntries(); updateAdminStatus(); loadPicksBreakdown(); loadBracketBreakdown(); }
 }
 
 /* ══════════════════════════════════════════
@@ -1877,6 +1886,176 @@ document.addEventListener('click', function(e) {
   const team = btn.getAttribute('data-pick-team');
   if (key && team) setPick(key, team);
 });
+
+async function loadBracketBreakdown() {
+  const container = document.getElementById('bracket-breakdown-body');
+  if (!container) return;
+  container.innerHTML = '<div class="empty">Loading...</div>';
+
+  try {
+    const rows = await sb.get('/rest/v1/participants?select=picks');
+    const allPicks = rows.map(r => r.picks || {});
+    const totalPlayers = rows.length;
+
+    if (!totalPlayers) {
+      container.innerHTML = '<div class="empty">No entries yet.</div>';
+      return;
+    }
+
+    // Tally picks for every key (r{round}_m{match}) and team
+    // tally[key][team] = count
+    const tally = {};
+    function addTally(key, team) {
+      if (!team) return;
+      if (!tally[key]) tally[key] = {};
+      tally[key][team] = (tally[key][team] || 0) + 1;
+    }
+    allPicks.forEach(picks => {
+      Object.entries(picks).forEach(([key, team]) => addTally(key, team));
+    });
+
+    // Layout constants — same as renderBracket/renderAdminBracket
+    const SLOT_H = 30;
+    const SLOT_GAP = 4;
+    const MATCH_H = SLOT_H * 2 + SLOT_GAP;
+    const COL_W = 168; // slightly wider to fit count badges
+    const CONN_W = 32;
+    const CHAMP_W = 120;
+    const TOP_OFF = 36;
+    const BASE_GAP = 12;
+    const R32_COUNT = 16;
+
+    const rounds = buildRounds(results); // structure follows actual results / TEAMS_R32 fallback
+
+    const centres = [];
+    const r0 = [];
+    for (let i = 0; i < R32_COUNT; i++) r0.push(TOP_OFF + i * (MATCH_H + BASE_GAP) + MATCH_H / 2);
+    centres.push(r0);
+    for (let r = 1; r <= 4; r++) {
+      const prev = centres[r - 1];
+      const curr = [];
+      for (let i = 0; i < prev.length; i += 2) curr.push((prev[i] + prev[i + 1]) / 2);
+      centres.push(curr);
+    }
+
+    const totalH = TOP_OFF + R32_COUNT * (MATCH_H + BASE_GAP);
+    const colX = [];
+    for (let r = 0; r <= 4; r++) colX.push(r * (COL_W + CONN_W));
+    const champX = colX[4] + COL_W + CONN_W;
+
+    const colHeaders = ['Round of 32', 'Round of 16', 'Quarterfinals', 'Semifinals', 'Final', '&#127942;'];
+    let html = `<div style="position:relative;min-width:${champX+CHAMP_W+16}px;height:${totalH+20}px">`;
+
+    for (let r = 0; r <= 4; r++) {
+      html += `<div style="position:absolute;left:${colX[r]}px;top:0;width:${COL_W}px;text-align:center;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-light);padding:3px 0;border-bottom:1px solid var(--border)">${colHeaders[r]}</div>`;
+    }
+    html += `<div style="position:absolute;left:${champX}px;top:0;width:${CHAMP_W}px;text-align:center;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--gold);padding:3px 0;border-bottom:1px solid var(--border)">${colHeaders[5]}</div>`;
+
+    function teamCountBtn(key, team, isWinningTeam) {
+      if (!team || team === 'TBD') {
+        return `<button class="team-btn tbd" disabled style="width:100%;height:${SLOT_H}px">TBD</button>`;
+      }
+      const count = (tally[key] && tally[key][team]) || 0;
+      const cls = 'team-btn' + (isWinningTeam ? ' result-set' : '');
+      const countColor = count > 0 ? 'var(--ink)' : 'var(--ink-light)';
+      return `<button class="${cls}" disabled style="width:100%;height:${SLOT_H}px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;font-size:12px">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${team}</span>
+        <span style="font-size:11px;font-weight:700;color:${countColor};margin-left:4px">${count}</span>
+      </button>`;
+    }
+
+    for (let r = 0; r <= 4; r++) {
+      const matchList = rounds[r];
+      const centreList = centres[r];
+      for (let i = 0; i < matchList.length; i++) {
+        const [a, b] = matchList[i];
+        const key = mk(r, i);
+        const result = results[key];
+        const cx = colX[r];
+        const cy = centreList[i];
+        const matchTop = cy - MATCH_H / 2;
+
+        html += `<div style="position:absolute;left:${cx}px;top:${matchTop}px;width:${COL_W}px">
+          <div style="margin-bottom:${SLOT_GAP}px">${teamCountBtn(key, a, result===a)}</div>
+          <div>${teamCountBtn(key, b, result===b)}</div>
+        </div>`;
+
+        if (r < 4) {
+          const aCy = matchTop + SLOT_H / 2;
+          const bCy = matchTop + SLOT_H + SLOT_GAP + SLOT_H / 2;
+          const midY = (aCy + bCy) / 2;
+          const connLeft = cx + COL_W;
+          html += `<svg style="position:absolute;left:${connLeft}px;top:0;width:${CONN_W}px;height:${totalH+20}px;pointer-events:none;overflow:visible">
+            <line x1="0" y1="${aCy}" x2="${CONN_W/2}" y2="${aCy}" stroke="var(--border-mid)" stroke-width="1.5"/>
+            <line x1="0" y1="${bCy}" x2="${CONN_W/2}" y2="${bCy}" stroke="var(--border-mid)" stroke-width="1.5"/>
+            <line x1="${CONN_W/2}" y1="${aCy}" x2="${CONN_W/2}" y2="${bCy}" stroke="var(--border-mid)" stroke-width="1.5"/>
+            <line x1="${CONN_W/2}" y1="${midY}" x2="${CONN_W}" y2="${midY}" stroke="var(--border-mid)" stroke-width="1.5"/>
+          </svg>`;
+        }
+      }
+    }
+
+    // Champion column — tally on the Final pick key
+    const fKey = mk(4, 0);
+    const finalCy = centres[4][0];
+    const champTop = finalCy - MATCH_H / 2;
+    const champTally = tally[fKey] || {};
+    const champSorted = Object.entries(champTally).sort((a,b) => b[1]-a[1]);
+    const fResult = results[fKey];
+
+    html += `<svg style="position:absolute;left:${colX[4]+COL_W}px;top:0;width:${CONN_W}px;height:${totalH+20}px;pointer-events:none;overflow:visible">
+      <line x1="0" y1="${finalCy}" x2="${CONN_W}" y2="${finalCy}" stroke="var(--gold)" stroke-width="1.5"/>
+    </svg>`;
+
+    let champHtml = '';
+    if (champSorted.length) {
+      champHtml = champSorted.map(([team, count]) => {
+        const isWinner = fResult === team;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;width:100%;padding:3px 8px;font-size:11px;border-radius:4px;background:${isWinner?'var(--green-light)':'var(--surface)'};border:1px solid ${isWinner?'#6dbf8c':'var(--border)'};margin-bottom:3px">
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${team}</span>
+          <span style="font-weight:700;margin-left:4px">${count}</span>
+        </div>`;
+      }).join('');
+    } else {
+      champHtml = '<div style="font-size:11px;color:var(--ink-light);text-align:center">No picks yet</div>';
+    }
+
+    html += `<div style="position:absolute;left:${champX}px;top:${champTop}px;width:${CHAMP_W}px;display:flex;flex-direction:column;align-items:stretch;gap:2px">
+      <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--gold);text-align:center;margin-bottom:4px">&#127942; Champion picks</div>
+      ${champHtml}
+    </div>`;
+
+    html += '</div>';
+
+    // 3rd place tally
+    const [l1, l2] = getSFLosers(results);
+    const tbTally = tally['third_place'] || {};
+    const tbResult = results['third_place'];
+    function tbCountBtn(team) {
+      if (!team || team === 'TBD') return `<button class="team-btn tbd" disabled style="flex:1;height:${SLOT_H}px">SF loser TBD</button>`;
+      const count = tbTally[team] || 0;
+      const cls = 'team-btn' + (tbResult === team ? ' result-set' : '');
+      return `<button class="${cls}" disabled style="flex:1;height:${SLOT_H}px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;font-size:12px">
+        <span>${team}</span><span style="font-weight:700">${count}</span>
+      </button>`;
+    }
+    html += `<div class="third-place-section" style="margin-top:1.5rem">
+      <div class="third-place-title">&#129353; 3rd place match — pick breakdown</div>
+      <div style="display:flex;gap:8px;align-items:center;max-width:380px;margin-top:8px">
+        ${tbCountBtn(l1)}
+        <span style="font-size:10px;font-weight:700;color:var(--ink-light)">vs</span>
+        ${tbCountBtn(l2)}
+      </div>
+    </div>`;
+
+    html += `<p style="font-size:12px;color:var(--ink-light);margin-top:12px">Numbers show how many of the ${totalPlayers} registered player(s) picked that team to win that match. Green highlight = actual result once entered.</p>`;
+
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = '<div class="empty">Failed to load.</div>';
+    console.error(e);
+  }
+}
 
 async function loadPicksBreakdown() {
   const container = document.getElementById('picks-breakdown-body');
